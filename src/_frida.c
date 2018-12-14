@@ -106,6 +106,7 @@ typedef struct _PyApplication                  PyApplication;
 typedef struct _PyProcess                      PyProcess;
 typedef struct _PySpawn                        PySpawn;
 typedef struct _PyChild                        PyChild;
+typedef struct _PyCrash                        PyCrash;
 typedef struct _PyIcon                         PyIcon;
 typedef struct _PySession                      PySession;
 typedef struct _PyScript                       PyScript;
@@ -183,6 +184,13 @@ struct _PyChild
   PyObject * path;
   PyObject * argv;
   PyObject * envp;
+};
+
+struct _PyCrash
+{
+  PyGObject parent;
+  guint pid;
+  PyObject * report;
 };
 
 struct _PyIcon
@@ -295,6 +303,11 @@ static int PyChild_init (PyChild * self, PyObject * args, PyObject * kw);
 static void PyChild_init_from_handle (PyChild * self, FridaChild * handle);
 static void PyChild_dealloc (PyChild * self);
 static PyObject * PyChild_repr (PyChild * self);
+
+static int PyCrash_init (PyCrash * self, PyObject * args, PyObject * kw);
+static void PyCrash_init_from_handle (PyCrash * self, FridaCrash * handle);
+static void PyCrash_dealloc (PyCrash * self);
+static PyObject * PyCrash_repr (PyCrash * self);
 
 static PyObject * PyIcon_new_from_handle (FridaIcon * handle);
 static int PyIcon_init (PyIcon * self, PyObject * args, PyObject * kw);
@@ -420,6 +433,13 @@ static PyMemberDef PyChild_members[] =
   { "path", T_OBJECT_EX, G_STRUCT_OFFSET (PyChild, path), READONLY, "Path of executable." },
   { "argv", T_OBJECT_EX, G_STRUCT_OFFSET (PyChild, argv), READONLY, "Argument vector." },
   { "envp", T_OBJECT_EX, G_STRUCT_OFFSET (PyChild, envp), READONLY, "Environment vector." },
+  { NULL }
+};
+
+static PyMemberDef PyCrash_members[] =
+{
+  { "pid", T_UINT, G_STRUCT_OFFSET (PyCrash, pid), READONLY, "Process ID." },
+  { "report", T_OBJECT_EX, G_STRUCT_OFFSET (PyCrash, report), READONLY, "Human-readable crash report." },
   { NULL }
 };
 
@@ -761,6 +781,48 @@ static PyTypeObject PyChildType =
 };
 
 PYFRIDA_DEFINE_TYPE (Child, PyChild_init_from_handle, g_object_unref);
+
+static PyTypeObject PyCrashType =
+{
+  PyVarObject_HEAD_INIT (NULL, 0)
+  "_frida.Crash",                               /* tp_name           */
+  sizeof (PyCrash),                             /* tp_basicsize      */
+  0,                                            /* tp_itemsize       */
+  (destructor) PyCrash_dealloc,                 /* tp_dealloc        */
+  NULL,                                         /* tp_print          */
+  NULL,                                         /* tp_getattr        */
+  NULL,                                         /* tp_setattr        */
+  NULL,                                         /* tp_compare        */
+  (reprfunc) PyCrash_repr,                      /* tp_repr           */
+  NULL,                                         /* tp_as_number      */
+  NULL,                                         /* tp_as_sequence    */
+  NULL,                                         /* tp_as_mapping     */
+  NULL,                                         /* tp_hash           */
+  NULL,                                         /* tp_call           */
+  NULL,                                         /* tp_str            */
+  NULL,                                         /* tp_getattro       */
+  NULL,                                         /* tp_setattro       */
+  NULL,                                         /* tp_as_buffer      */
+  Py_TPFLAGS_DEFAULT,                           /* tp_flags          */
+  "Frida Crash Details",                        /* tp_doc            */
+  NULL,                                         /* tp_traverse       */
+  NULL,                                         /* tp_clear          */
+  NULL,                                         /* tp_richcompare    */
+  0,                                            /* tp_weaklistoffset */
+  NULL,                                         /* tp_iter           */
+  NULL,                                         /* tp_iternext       */
+  NULL,                                         /* tp_methods        */
+  PyCrash_members,                              /* tp_members        */
+  NULL,                                         /* tp_getset         */
+  &PyGObjectType,                               /* tp_base           */
+  NULL,                                         /* tp_dict           */
+  NULL,                                         /* tp_descr_get      */
+  NULL,                                         /* tp_descr_set      */
+  0,                                            /* tp_dictoffset     */
+  (initproc) PyCrash_init,                      /* tp_init           */
+};
+
+PYFRIDA_DEFINE_TYPE (Crash, PyCrash_init_from_handle, g_object_unref);
 
 static PyTypeObject PyIconType =
 {
@@ -2544,6 +2606,61 @@ PyChild_repr (PyChild * self)
 }
 
 
+static int
+PyCrash_init (PyCrash * self, PyObject * args, PyObject * kw)
+{
+  if (PyGObjectType.tp_init ((PyObject *) self, args, kw) < 0)
+    return -1;
+
+  self->pid = 0;
+  self->report = NULL;
+
+  return 0;
+}
+
+static void
+PyCrash_init_from_handle (PyCrash * self, FridaCrash * handle)
+{
+  self->pid = frida_crash_get_pid (handle);
+  self->report = PyGObject_marshal_string (frida_crash_get_report (handle));
+}
+
+static void
+PyCrash_dealloc (PyCrash * self)
+{
+  Py_XDECREF (self->report);
+
+  PyGObjectType.tp_dealloc ((PyObject *) self);
+}
+
+static PyObject *
+PyCrash_repr (PyCrash * self)
+{
+  PyObject * result;
+  FridaCrash * handle;
+  GString * repr;
+  gchar * report;
+
+  handle = PY_GOBJECT_HANDLE (self);
+
+  repr = g_string_new ("Crash(");
+
+  g_string_append_printf (repr, "pid=%u", self->pid);
+
+  report = PyFrida_repr (self->report);
+  g_string_append_printf (repr, ", report=%s", report);
+  g_free (report);
+
+  g_string_append (repr, ")");
+
+  result = PyRepr_FromString (repr->str);
+
+  g_string_free (repr, TRUE);
+
+  return result;
+}
+
+
 static PyObject *
 PyIcon_new_from_handle (FridaIcon * handle)
 {
@@ -3037,6 +3154,7 @@ MOD_INIT (_frida)
   PYFRIDA_REGISTER_TYPE (Process, FRIDA_TYPE_PROCESS);
   PYFRIDA_REGISTER_TYPE (Spawn, FRIDA_TYPE_SPAWN);
   PYFRIDA_REGISTER_TYPE (Child, FRIDA_TYPE_CHILD);
+  PYFRIDA_REGISTER_TYPE (Crash, FRIDA_TYPE_CRASH);
   PYFRIDA_REGISTER_TYPE (Icon, FRIDA_TYPE_ICON);
   PYFRIDA_REGISTER_TYPE (Session, FRIDA_TYPE_SESSION);
   PYFRIDA_REGISTER_TYPE (Script, FRIDA_TYPE_SCRIPT);
